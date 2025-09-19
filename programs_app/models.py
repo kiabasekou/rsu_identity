@@ -1,8 +1,8 @@
 from django.db import models
-from django.contrib.postgres.fields import ArrayField
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 import uuid
+import json
 from decimal import Decimal
 
 class SocialProgram(models.Model):
@@ -29,12 +29,15 @@ class SocialProgram(models.Model):
     
     # Identifiants
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    code = models.CharField(max_length=20, unique=True)  # Ex: RSU-001, ALI-002
+    code = models.CharField(max_length=20, unique=True)
     name = models.CharField(max_length=200)
     description = models.TextField()
     program_type = models.CharField(max_length=30, choices=PROGRAM_TYPES)
     
     # Configuration financière
+
+
+    
     budget_total = models.DecimalField(max_digits=15, decimal_places=2)
     budget_allocated = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     amount_per_beneficiary = models.DecimalField(max_digits=10, decimal_places=2)
@@ -54,9 +57,9 @@ class SocialProgram(models.Model):
     registration_start = models.DateField()
     registration_end = models.DateField()
     
-    # Ciblage géographique
-    target_provinces = ArrayField(models.CharField(max_length=100), blank=True, default=list)
-    target_cities = ArrayField(models.CharField(max_length=100), blank=True, default=list)
+    # Ciblage géographique - CORRIGÉ pour SQLite
+    target_provinces = models.TextField(blank=True)  # JSON string
+    target_cities = models.TextField(blank=True)  # JSON string
     is_nationwide = models.BooleanField(default=False)
     
     # Critères d'éligibilité
@@ -64,11 +67,11 @@ class SocialProgram(models.Model):
     max_age = models.PositiveIntegerField(null=True, blank=True)
     target_gender = models.CharField(max_length=1, choices=[('M', 'Masculin'), ('F', 'Féminin'), ('A', 'Tous')], default='A')
     max_income_threshold = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    required_documents = ArrayField(models.CharField(max_length=100), default=list)
+    required_documents = models.TextField(blank=True)  # JSON string
     
-    # Configuration avancée - CORRIGÉ pour Django 5.x
-    eligibility_rules = models.JSONField(default=dict)  # ← CORRIGÉ
-    additional_criteria = models.JSONField(default=dict)  # ← CORRIGÉ
+    # Configuration avancée
+    eligibility_rules = models.JSONField(default=dict)
+    additional_criteria = models.JSONField(default=dict)
     
     # Statut et gestion
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='DRAFT')
@@ -94,16 +97,6 @@ class SocialProgram(models.Model):
             models.Index(fields=['program_type', 'status']),
             models.Index(fields=['start_date', 'end_date']),
         ]
-        constraints = [
-            models.CheckConstraint(
-                check=models.Q(end_date__gt=models.F('start_date')),
-                name='end_date_after_start_date'
-            ),
-            models.CheckConstraint(
-                check=models.Q(registration_end__gte=models.F('registration_start')),
-                name='registration_end_after_start'
-            ),
-        ]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
@@ -120,15 +113,40 @@ class SocialProgram(models.Model):
         return (self.status == 'ACTIVE' and 
                 self.registration_start <= today <= self.registration_end)
 
+    
     @property
     def budget_remaining(self):
-        return self.budget_total - self.budget_allocated
+        """Budget restant avec protection contre None"""
+        from decimal import Decimal
+        if not self.total_budget:
+            return Decimal('0.00')
+        allocated = self.allocated_budget or Decimal('0.00')
+        return self.total_budget - allocated
 
     @property
     def capacity_remaining(self):
         if self.max_beneficiaries:
             return self.max_beneficiaries - self.current_beneficiaries
         return None
+
+    # Helpers pour gérer les listes comme JSON
+    def get_target_provinces(self):
+        return json.loads(self.target_provinces) if self.target_provinces else []
+    
+    def set_target_provinces(self, provinces_list):
+        self.target_provinces = json.dumps(provinces_list)
+    
+    def get_target_cities(self):
+        return json.loads(self.target_cities) if self.target_cities else []
+    
+    def set_target_cities(self, cities_list):
+        self.target_cities = json.dumps(cities_list)
+    
+    def get_required_documents(self):
+        return json.loads(self.required_documents) if self.required_documents else []
+    
+    def set_required_documents(self, docs_list):
+        self.required_documents = json.dumps(docs_list)
 
 
 class Beneficiary(models.Model):
@@ -146,7 +164,7 @@ class Beneficiary(models.Model):
     
     # Identifiants
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    beneficiary_number = models.CharField(max_length=20, unique=True)  # Numéro automatique
+    beneficiary_number = models.CharField(max_length=20, unique=True)
     
     # Liens
     person = models.ForeignKey('identity_app.PersonIdentity', on_delete=models.CASCADE)
@@ -174,9 +192,9 @@ class Beneficiary(models.Model):
     last_visit_date = models.DateField(null=True, blank=True)
     compliance_score = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('100.00'))
     
-    # Documents et validation
-    submitted_documents = ArrayField(models.CharField(max_length=100), default=list)
-    missing_documents = ArrayField(models.CharField(max_length=100), default=list)
+    # Documents et validation - CORRIGÉ pour SQLite
+    submitted_documents = models.TextField(blank=True)  # JSON string
+    missing_documents = models.TextField(blank=True)  # JSON string
     verification_status = models.CharField(
         max_length=20,
         choices=[
@@ -192,9 +210,9 @@ class Beneficiary(models.Model):
     approved_by = models.ForeignKey('auth.User', on_delete=models.PROTECT, null=True, blank=True, related_name='approved_beneficiaries')
     case_worker = models.ForeignKey('auth.User', on_delete=models.PROTECT, null=True, blank=True, related_name='assigned_beneficiaries')
     
-    # Notes et historique - CORRIGÉ pour Django 5.x
+    # Notes et historique
     notes = models.TextField(blank=True)
-    additional_data = models.JSONField(default=dict)  # ← CORRIGÉ
+    additional_data = models.JSONField(default=dict)
     
     class Meta:
         db_table = 'programs_beneficiaries'
@@ -203,12 +221,6 @@ class Beneficiary(models.Model):
             models.Index(fields=['program', 'status']),
             models.Index(fields=['person', 'program']),
             models.Index(fields=['approval_date', 'status']),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['person', 'program'],
-                name='unique_person_per_program'
-            ),
         ]
 
     def __str__(self):
@@ -223,6 +235,19 @@ class Beneficiary(models.Model):
         if self.start_date:
             return (timezone.now().date() - self.start_date).days
         return 0
+
+    # Helpers pour gérer les listes comme JSON
+    def get_submitted_documents(self):
+        return json.loads(self.submitted_documents) if self.submitted_documents else []
+    
+    def set_submitted_documents(self, docs_list):
+        self.submitted_documents = json.dumps(docs_list)
+    
+    def get_missing_documents(self):
+        return json.loads(self.missing_documents) if self.missing_documents else []
+    
+    def set_missing_documents(self, docs_list):
+        self.missing_documents = json.dumps(docs_list)
 
 
 class Payment(models.Model):
@@ -311,7 +336,7 @@ class DigitalVoucher(models.Model):
     # Identifiants
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     voucher_code = models.CharField(max_length=20, unique=True)
-    qr_code = models.TextField()  # QR Code encodé
+    qr_code = models.TextField()
     
     # Liens
     beneficiary = models.ForeignKey(Beneficiary, on_delete=models.CASCADE, related_name='vouchers')
@@ -327,10 +352,10 @@ class DigitalVoucher(models.Model):
     expiry_date = models.DateTimeField()
     status = models.CharField(max_length=15, choices=VOUCHER_STATUS, default='ACTIVE')
     
-    # Restrictions d'usage
-    allowed_categories = ArrayField(models.CharField(max_length=100), default=list)  # ['food', 'medicine', 'education']
-    allowed_merchants = ArrayField(models.CharField(max_length=100), default=list, blank=True)
-    geographic_restrictions = ArrayField(models.CharField(max_length=100), default=list, blank=True)
+    # Restrictions d'usage - CORRIGÉ pour SQLite
+    allowed_categories = models.TextField(blank=True)  # JSON string
+    allowed_merchants = models.TextField(blank=True)  # JSON string
+    geographic_restrictions = models.TextField(blank=True)  # JSON string
     
     # Utilisation
     first_use_date = models.DateTimeField(null=True, blank=True)
@@ -362,3 +387,22 @@ class DigitalVoucher(models.Model):
         if self.face_value > 0:
             return float((self.face_value - self.remaining_value) / self.face_value * 100)
         return 0
+
+    # Helpers pour gérer les listes comme JSON
+    def get_allowed_categories(self):
+        return json.loads(self.allowed_categories) if self.allowed_categories else []
+    
+    def set_allowed_categories(self, categories_list):
+        self.allowed_categories = json.dumps(categories_list)
+    
+    def get_allowed_merchants(self):
+        return json.loads(self.allowed_merchants) if self.allowed_merchants else []
+    
+    def set_allowed_merchants(self, merchants_list):
+        self.allowed_merchants = json.dumps(merchants_list)
+    
+    def get_geographic_restrictions(self):
+        return json.loads(self.geographic_restrictions) if self.geographic_restrictions else []
+    
+    def set_geographic_restrictions(self, restrictions_list):
+        self.geographic_restrictions = json.dumps(restrictions_list)

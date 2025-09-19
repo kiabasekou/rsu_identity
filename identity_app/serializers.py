@@ -1,4 +1,4 @@
-# 3. serializers.py - API Serializers
+# serializers.py - API Serializers pour Identity App
 from rest_framework import serializers
 from .models import PersonIdentity, DeduplicationCandidate, FamilyRelationship
 
@@ -48,4 +48,3 @@ class FamilyRelationshipSerializer(serializers.ModelSerializer):
             'verified_at', 'supporting_documents', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
-

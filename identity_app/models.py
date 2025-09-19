@@ -1,8 +1,8 @@
 from django.db import models
-from django.contrib.postgres.fields import ArrayField
 from django.core.validators import RegexValidator, MinLengthValidator
 from django.utils import timezone
 import uuid
+import json
 from decimal import Decimal
 
 class PersonIdentity(models.Model):
@@ -70,7 +70,7 @@ class PersonIdentity(models.Model):
     # Coordonnées GPS
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    location_accuracy = models.FloatField(null=True, blank=True)  # en mètres
+    location_accuracy = models.FloatField(null=True, blank=True)
     
     # Informations socio-économiques
     occupation = models.CharField(max_length=200, blank=True)
@@ -88,10 +88,10 @@ class PersonIdentity(models.Model):
     validated_at = models.DateTimeField(null=True, blank=True)
     validated_by = models.ForeignKey('auth.User', on_delete=models.PROTECT, null=True, blank=True, related_name='validated_identities')
     
-    # Données RBPP - CORRIGÉ pour Django 5.x
+    # Données RBPP
     rbpp_synchronized = models.BooleanField(default=False)
     rbpp_last_sync = models.DateTimeField(null=True, blank=True)
-    rbpp_data = models.JSONField(default=dict, blank=True)  # ← CORRIGÉ
+    rbpp_data = models.JSONField(default=dict, blank=True)
     
     class Meta:
         db_table = 'identity_persons'
@@ -101,16 +101,6 @@ class PersonIdentity(models.Model):
             models.Index(fields=['first_name', 'last_name']),
             models.Index(fields=['birth_date']),
             models.Index(fields=['city', 'province']),
-        ]
-        constraints = [
-            models.CheckConstraint(
-                check=models.Q(birth_date__lt=timezone.now().date()),
-                name='birth_date_must_be_past'
-            ),
-            models.CheckConstraint(
-                check=models.Q(household_size__gte=1),
-                name='household_size_positive'
-            ),
         ]
 
     def __str__(self):
@@ -153,13 +143,13 @@ class DeduplicationCandidate(models.Model):
     person2 = models.ForeignKey(PersonIdentity, on_delete=models.CASCADE, related_name='dedup_as_person2')
     
     # Score de similarité
-    similarity_score = models.DecimalField(max_digits=5, decimal_places=4)  # 0.0000 à 1.0000
+    similarity_score = models.DecimalField(max_digits=5, decimal_places=4)
     match_type = models.CharField(max_length=10, choices=MATCH_TYPES)
     
-    # Détails de la correspondance
-    matching_fields = ArrayField(models.CharField(max_length=50), default=list)
-    conflicting_fields = ArrayField(models.CharField(max_length=50), default=list)
-    confidence_factors = models.JSONField(default=dict)  # ← CORRIGÉ
+    # Détails de la correspondance - CORRIGÉ pour SQLite
+    matching_fields = models.TextField(blank=True)  # JSON string
+    conflicting_fields = models.TextField(blank=True)  # JSON string
+    confidence_factors = models.JSONField(default=dict)
     
     # Statut de résolution
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
@@ -177,19 +167,22 @@ class DeduplicationCandidate(models.Model):
             models.Index(fields=['similarity_score', 'match_type']),
             models.Index(fields=['status', 'detected_at']),
         ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['person1', 'person2'],
-                name='unique_dedup_pair'
-            ),
-            models.CheckConstraint(
-                check=~models.Q(person1=models.F('person2')),
-                name='different_persons_only'
-            ),
-        ]
 
     def __str__(self):
         return f"Déduplication {self.person1.full_name} ↔ {self.person2.full_name} ({self.similarity_score})"
+
+    # Helpers pour gérer les listes comme JSON
+    def get_matching_fields(self):
+        return json.loads(self.matching_fields) if self.matching_fields else []
+    
+    def set_matching_fields(self, fields_list):
+        self.matching_fields = json.dumps(fields_list)
+    
+    def get_conflicting_fields(self):
+        return json.loads(self.conflicting_fields) if self.conflicting_fields else []
+    
+    def set_conflicting_fields(self, fields_list):
+        self.conflicting_fields = json.dumps(fields_list)
 
 
 class FamilyRelationship(models.Model):
@@ -218,7 +211,7 @@ class FamilyRelationship(models.Model):
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
     verified_by = models.ForeignKey('auth.User', on_delete=models.PROTECT, null=True, blank=True)
-    supporting_documents = ArrayField(models.CharField(max_length=200), default=list, blank=True)
+    supporting_documents = models.TextField(blank=True)  # JSON string
     
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('auth.User', on_delete=models.PROTECT, related_name='created_relationships')
@@ -229,16 +222,12 @@ class FamilyRelationship(models.Model):
             models.Index(fields=['person1', 'relationship_type']),
             models.Index(fields=['person2', 'relationship_type']),
         ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['person1', 'person2', 'relationship_type'],
-                name='unique_relationship'
-            ),
-            models.CheckConstraint(
-                check=~models.Q(person1=models.F('person2')),
-                name='no_self_relationship'
-            ),
-        ]
 
     def __str__(self):
         return f"{self.person1.full_name} → {self.get_relationship_type_display()} → {self.person2.full_name}"
+
+    def get_supporting_documents(self):
+        return json.loads(self.supporting_documents) if self.supporting_documents else []
+    
+    def set_supporting_documents(self, docs_list):
+        self.supporting_documents = json.dumps(docs_list)
